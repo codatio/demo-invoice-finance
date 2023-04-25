@@ -8,7 +8,7 @@ public record Customer
 
     public bool IsUnitedStatesCustomer()
     {
-        return Addresses.All(x => x.Country == "US");
+        return Addresses.All(x => x.Country == "United States");
     }
 }
 

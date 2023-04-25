@@ -30,7 +30,8 @@ public class CodatDataClient : ICodatDataClient
         var response = await Client.PostAsJsonAsync("/companies", newCompanyRequestObject);
         if (!response.IsSuccessStatusCode)
         {
-            ThrowDataClientExceptionForHttpResponse(response);
+            var errorResponse = await response.Content.ReadFromJsonAsync<CodatApiErrorResponse>();
+            ThrowDataClientExceptionForHttpResponse(errorResponse ?? new CodatApiErrorResponse { Error = "Unkown error" });
         }
 
         var company = await response.Content.ReadFromJsonAsync<Company>();
@@ -41,12 +42,12 @@ public class CodatDataClient : ICodatDataClient
 
     public Task<List<Platform>> GetAccountingPlatformsAsync()
     {
-        return ProcessPaginatedResponse<Platform>("/integrations", 250, "sourceType = Accounting");
+        return ProcessPaginatedResponse<Platform>("/integrations", 250, "sourceType=Accounting");
     }
 
     public Task<List<Invoice>> GetPaidInvoicesForCustomerAsync(Guid companyId, string customerId)
     {
-        return ProcessPaginatedResponse<Invoice>($"/companies/{companyId}/data/invoices", 250, $"status = paid && customerRef.id = {customerId}");
+        return ProcessPaginatedResponse<Invoice>($"/companies/{companyId}/data/invoices", 250, $"status=paid&&customerRef.id={customerId}");
     }
 
     public Task<List<Invoice>> GetUnpaidInvoicesAsync(Guid companyId)
@@ -54,7 +55,7 @@ public class CodatDataClient : ICodatDataClient
         return ProcessPaginatedResponse<Invoice>(
             $"/companies/{companyId}/data/invoices",
             250,
-            "{status = submitted || status = partiallyPaid} && currency = USD && {amountDue > 50 && amountDue <= 1000}"
+            "{status=submitted||status=partiallyPaid}&&currency=USD&&{amountDue>50&&amountDue<=1000}"
         );
     }
 
@@ -65,7 +66,7 @@ public class CodatDataClient : ICodatDataClient
 
     private async Task<List<T>> ProcessPaginatedResponse<T>(string uri, int pageSize, string query)
     {
-        var queryString = string.IsNullOrEmpty(query) ? string.Empty : HttpUtility.UrlEncode($"&query={query}");
+        var queryString = string.IsNullOrEmpty(query) ? string.Empty : $"&query={HttpUtility.UrlEncode(query)}";
         var data = new List<T>();
         var page = 1;
         CodatPaginatedResponse<T> pagedResult;
@@ -85,7 +86,8 @@ public class CodatDataClient : ICodatDataClient
         var response = await Client.GetAsync(endpoint);
         if (!response.IsSuccessStatusCode)
         {
-            ThrowDataClientExceptionForHttpResponse(response);
+            var errorResponse = await response.Content.ReadFromJsonAsync<CodatApiErrorResponse>();
+            ThrowDataClientExceptionForHttpResponse(errorResponse ?? new CodatApiErrorResponse { Error = "Unkown error" });
         }
 
         var body = await response.Content.ReadFromJsonAsync<T>();
@@ -94,9 +96,9 @@ public class CodatDataClient : ICodatDataClient
         return body!;
     }
 
-    private static void ThrowDataClientExceptionForHttpResponse(HttpResponseMessage response)
+    private static void ThrowDataClientExceptionForHttpResponse(CodatApiErrorResponse response)
     {
-        throw new CodatDataClientException($"Failed with status code {(int) response.StatusCode} ({response.StatusCode})");
+        throw new CodatDataClientException($"Failed with status code {response.StatusCode}: ({response.Error})");
     }
 
     private static void AssertObjectIsNotNull<T>(T input)
