@@ -1,17 +1,15 @@
 ﻿using System.Text;
-using Codat.Demos.InvoiceFinancing.Api.DataClients;
 using Codat.Demos.InvoiceFinancing.Api.Exceptions;
 using Codat.Demos.InvoiceFinancing.Api.Models;
 using Codat.Demos.InvoiceFinancing.Api.Orchestrators;
 using Codat.Demos.InvoiceFinancing.Api.Services;
-using Microsoft.Net.Http.Headers;
+using Codat.Lending;
+using Codat.Platform;
 
 namespace Codat.Demos.InvoiceFinancing.Api;
 
 public static class BindingModule
 {
-    private const string CodatUrl = "https://api.codat.io";
-    private const string ContentType = "application/json";
 
     public static IServiceCollection Bind(this IServiceCollection services, IConfiguration configuration)
     {
@@ -20,7 +18,6 @@ public static class BindingModule
         services.Configure<InvoiceFinancingParameters>(configuration.GetSection("AppSettings:InvoiceFinancingParameters"));
 
         return services.AddSingleton<IApplicationStore, ApplicationStore>()
-            .AddSingleton<ICodatDataClient, CodatDataClient>()
             .AddSingleton<IApplicationOrchestrator, ApplicationOrchestrator>()
             .AddSingleton<IFinancingProcessor, FinancingProcessor>()
             .AddSingleton<ICustomerRiskAssessor, CustomerRiskAssessor>()
@@ -36,17 +33,11 @@ public static class BindingModule
         {
             throw new ConfigurationMissingException(apiKeyParam);
         }
-
+        
         var encodedApiKey = Convert.ToBase64String(Encoding.UTF8.GetBytes(apiKey));
+        var authHeader = $"Basic {encodedApiKey}";
 
-        services.AddHttpClient(
-            "Codat",
-            httpClient =>
-            {
-                httpClient.BaseAddress = new Uri(CodatUrl);
-                httpClient.DefaultRequestHeaders.Add(HeaderNames.Accept, ContentType);
-                httpClient.DefaultRequestHeaders.Add(HeaderNames.Authorization, $"Basic {encodedApiKey}");
-            }
-        );
+        services.AddSingleton<ICodatPlatform, CodatPlatform>(_ => new CodatPlatform(new(){ AuthHeader = authHeader}));
+        services.AddSingleton<ICodatLending, CodatLending>(_ => new CodatLending(new(){ AuthHeader = authHeader}));
     }
 }

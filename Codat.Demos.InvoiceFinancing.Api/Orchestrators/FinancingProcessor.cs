@@ -1,6 +1,9 @@
-﻿using Codat.Demos.InvoiceFinancing.Api.DataClients;
+﻿using Codat.Demos.InvoiceFinancing.Api.Mappers;
 using Codat.Demos.InvoiceFinancing.Api.Models;
 using Codat.Demos.InvoiceFinancing.Api.Services;
+using Codat.Lending;
+using Codat.Lending.Models.Operations;
+using Codat.Lending.Models.Shared;
 using Microsoft.Extensions.Options;
 
 namespace Codat.Demos.InvoiceFinancing.Api.Orchestrators;
@@ -13,21 +16,21 @@ public interface IFinancingProcessor
 public class FinancingProcessor : IFinancingProcessor
 {
     private readonly IApplicationStore _applicationStore;
-    private readonly ICodatDataClient _codatDataClient;
+    private readonly ICodatLending _codatLending;
     private readonly ICustomerRiskAssessor _customerRiskAssessor;
     private readonly IInvoiceFinanceAssessor _invoiceFinanceAssessor;
     private readonly InvoiceFinancingParameters _parameters;
 
     public FinancingProcessor(
         IApplicationStore applicationStore,
-        ICodatDataClient codatDataClient,
+        ICodatLending codatLending,
         ICustomerRiskAssessor customerRiskAssessor,
         IInvoiceFinanceAssessor invoiceFinanceAssessor,
         IOptions<InvoiceFinancingParameters> options
     )
     {
         _applicationStore = applicationStore;
-        _codatDataClient = codatDataClient;
+        _codatLending = codatLending;
         _customerRiskAssessor = customerRiskAssessor;
         _invoiceFinanceAssessor = invoiceFinanceAssessor;
         _parameters = options.Value;
@@ -51,10 +54,36 @@ public class FinancingProcessor : IFinancingProcessor
         }
     }
 
+    private async Task<Invoice[]> GetUnpaidInvoicesAsync(string companyId)
+    {
+        var invoices = new List<Invoice>();
+        var page = 1;
+        ListAccountingInvoicesResponse pagedResult;
+        do
+        {
+            pagedResult = await _codatLending.AccountsReceivable.Invoices.ListAsync(new()
+            {
+                CompanyId = companyId,
+                Query = "{status=submitted||status=partiallyPaid}&&currency=USD&&{amountDue>50&&amountDue<=1000}",
+                Page = page
+            });
+
+            if (!pagedResult.RawResponse.IsSuccessStatusCode)
+            {
+                continue;
+            }
+
+            invoices.AddRange(pagedResult.AccountingInvoices.Results.Select(InvoiceMapper.MapToDomainModel));
+            page++;
+        } while (pagedResult.AccountingInvoices.PageNumber * pagedResult.AccountingInvoices.PageSize < pagedResult.AccountingInvoices.TotalResults);
+
+        return invoices.ToArray();
+    }
+
     private async Task<List<InvoiceDecision>> ProcessInvoicesAsync(Guid companyId)
     {
         // Get all unpaid invoices for the company
-        var unpaidInvoices = await _codatDataClient.GetUnpaidInvoicesAsync(companyId);
+        var unpaidInvoices = await GetUnpaidInvoicesAsync(companyId.ToString());
         var totalAmountDueForCompany = unpaidInvoices.Sum(x => x.AmountDue);
 
         // Get customers by id from the unpaid invoices
@@ -86,8 +115,28 @@ public class FinancingProcessor : IFinancingProcessor
     {
         // Get all customers then filter in memory
         // Codat query strings support up to 2048 characters, we may go over that by combining all customer IDs into a single query
-        var customers = await _codatDataClient.GetCustomersAsync(companyId);
+        var customers = new List<Customer>();
+        var page = 1;
+        ListAccountingCustomersResponse pagedResult;
+        do
+        {
+            pagedResult = await _codatLending.AccountsReceivable.Customers.ListAsync(new()
+            {
+                Page = page
+            });
+            
+            
+            if (!pagedResult.RawResponse.IsSuccessStatusCode)
+            {
+                continue;
+            }
 
+            customers.AddRange(pagedResult.AccountingCustomers.Results.Select(CustomerMapper.MapToDomainModel));
+            page++;
+            
+            
+        } while (pagedResult.AccountingCustomers.PageNumber * pagedResult.AccountingCustomers.PageSize < pagedResult.AccountingCustomers.TotalResults);
+        
         return customers.Where(x => customerIds.Contains(x.Id) && x.IsUnitedStatesCustomer() && !string.IsNullOrEmpty(x.RegistrationNumber)).ToList();
     }
 }

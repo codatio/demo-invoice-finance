@@ -1,7 +1,7 @@
-﻿using Codat.Demos.InvoiceFinancing.Api.DataClients;
-using Codat.Demos.InvoiceFinancing.Api.Exceptions;
+﻿using Codat.Demos.InvoiceFinancing.Api.Exceptions;
 using Codat.Demos.InvoiceFinancing.Api.Models;
 using Codat.Demos.InvoiceFinancing.Api.Services;
+using Codat.Platform;
 
 namespace Codat.Demos.InvoiceFinancing.Api.Orchestrators;
 
@@ -19,21 +19,28 @@ public class ApplicationOrchestrator : IApplicationOrchestrator
         Enum.GetValues(typeof(ApplicationDataRequirements)).Cast<ApplicationDataRequirements>().ToArray();
 
     private readonly IApplicationStore _applicationStore;
-    private readonly ICodatDataClient _codatDataClient;
+    private readonly ICodatPlatform _codatPlatform;
     private readonly IFinancingProcessor _financingProcessor;
+    private readonly List<string> _accountingPlatformKeys = new();
 
-    public ApplicationOrchestrator(IApplicationStore applicationStore, ICodatDataClient codatDataClient, IFinancingProcessor financingProcessor)
+    public ApplicationOrchestrator(IApplicationStore applicationStore, ICodatPlatform codatPlatform, IFinancingProcessor financingProcessor)
     {
         _applicationStore = applicationStore;
-        _codatDataClient = codatDataClient;
+        _codatPlatform = codatPlatform;
         _financingProcessor = financingProcessor;
     }
 
     public async Task<NewApplicationDetails> CreateApplicationAsync()
     {
         var applicationId = Guid.NewGuid();
-        var company = await _codatDataClient.CreateCompanyAsync(applicationId.ToString());
-        return _applicationStore.CreateApplication(applicationId, company.Id);
+        var companyResponse = await _codatPlatform.Companies.CreateAsync(new() { Name = applicationId.ToString() });
+
+        if (!companyResponse.RawResponse?.IsSuccessStatusCode ?? true)
+        {
+            throw new ApplicationOrchestratorException("Could not create company");
+        }
+        
+        return _applicationStore.CreateApplication(applicationId, Guid.Parse(companyResponse.Company!.Id));
     }
 
     public Application GetApplication(Guid id)
@@ -117,7 +124,19 @@ public class ApplicationOrchestrator : IApplicationOrchestrator
 
     private async Task<bool> IsAccountingPlatformAsync(string platformKey)
     {
-        var platforms = await _codatDataClient.GetAccountingPlatformsAsync();
-        return platforms.Any(x => x.Key == platformKey);
+        if (_accountingPlatformKeys.Count == 0)
+        {
+            var response = await _codatPlatform.Integrations.ListAsync(new()
+            {
+                Query = "sourceType=Accounting"
+            });
+            
+            if (response.Integrations?.Results != null)
+            {
+                _accountingPlatformKeys.AddRange(response.Integrations.Results.Select(x => x.Key));
+            }
+        }
+
+        return _accountingPlatformKeys.Contains(platformKey);
     }
 }

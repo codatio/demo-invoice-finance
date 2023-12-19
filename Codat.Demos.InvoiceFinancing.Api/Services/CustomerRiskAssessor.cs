@@ -1,5 +1,7 @@
-﻿using Codat.Demos.InvoiceFinancing.Api.DataClients;
+﻿using Codat.Demos.InvoiceFinancing.Api.Mappers;
 using Codat.Demos.InvoiceFinancing.Api.Models;
+using Codat.Lending;
+using Codat.Lending.Models.Operations;
 
 namespace Codat.Demos.InvoiceFinancing.Api.Services;
 
@@ -10,11 +12,11 @@ public interface ICustomerRiskAssessor
 
 public class CustomerRiskAssessor : ICustomerRiskAssessor
 {
-    private readonly ICodatDataClient _codatDataClient;
+    private readonly ICodatLending _codatLending;
 
-    public CustomerRiskAssessor(ICodatDataClient codatDataClient)
+    public CustomerRiskAssessor(ICodatLending codatLending)
     {
-        _codatDataClient = codatDataClient;
+        _codatLending = codatLending;
     }
 
     public async Task<CustomerRisk> AssessCustomerRisk(
@@ -24,8 +26,8 @@ public class CustomerRiskAssessor : ICustomerRiskAssessor
         decimal totalAmountDueForCompany
     )
     {
-        var customerPaidInvoices = await _codatDataClient.GetPaidInvoicesForCustomerAsync(companyId, customer.Id);
-        if (customerPaidInvoices.Count < 2)
+        var customerPaidInvoices = await GetPaidInvoicesForCustomerAsync(companyId.ToString(), customer.Id);
+        if (customerPaidInvoices.Length < 2)
         {
             // Discard customers with fewer than 2 paid invoices (max risk)
             return new CustomerRisk
@@ -44,5 +46,31 @@ public class CustomerRiskAssessor : ICustomerRiskAssessor
             CustomerId = customer.Id,
             Risk = risk
         };
+    }
+    
+    private async Task<Invoice[]> GetPaidInvoicesForCustomerAsync(string companyId, string customerId)
+    {
+        var invoices = new List<Invoice>();
+        var page = 1;
+        ListAccountingInvoicesResponse pagedResult;
+        do
+        {
+            pagedResult = await _codatLending.AccountsReceivable.Invoices.ListAsync(new()
+            {
+                CompanyId = companyId,
+                Query = $"status=paid&&customerRef.id={customerId}",
+                Page = page
+            });
+
+            if (!pagedResult.RawResponse.IsSuccessStatusCode)
+            {
+                continue;
+            }
+
+            invoices.AddRange(pagedResult.AccountingInvoices.Results.Select(InvoiceMapper.MapToDomainModel));
+            page++;
+        } while (pagedResult.AccountingInvoices.PageNumber * pagedResult.AccountingInvoices.PageSize < pagedResult.AccountingInvoices.TotalResults);
+
+        return invoices.ToArray();
     }
 }
