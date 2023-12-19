@@ -1,8 +1,12 @@
-﻿using Codat.Demos.InvoiceFinancing.Api.DataClients;
+﻿using System.Net;
+using System.Runtime.CompilerServices;
 using Codat.Demos.InvoiceFinancing.Api.Exceptions;
 using Codat.Demos.InvoiceFinancing.Api.Models;
 using Codat.Demos.InvoiceFinancing.Api.Orchestrators;
 using Codat.Demos.InvoiceFinancing.Api.Services;
+using Codat.Platform;
+using Codat.Platform.Models.Operations;
+using Codat.Platform.Models.Shared;
 using FluentAssertions;
 using Moq;
 using Xunit;
@@ -13,13 +17,13 @@ public class ApplicationOrchestratorTests
 {
     private const string ExpectedPlatformKey = "mqjo";
     private readonly Mock<IApplicationStore> _applicationStore = new(MockBehavior.Strict);
-    private readonly Mock<ICodatDataClient> _codatDataClient = new(MockBehavior.Strict);
+    private readonly Mock<ICodatPlatform> _codatPlatform = new(MockBehavior.Strict);
     private readonly Mock<IFinancingProcessor> _financingProcessor = new(MockBehavior.Strict);
     private readonly ApplicationOrchestrator _orchestrator;
 
     public ApplicationOrchestratorTests()
     {
-        _orchestrator = new ApplicationOrchestrator(_applicationStore.Object, _codatDataClient.Object, _financingProcessor.Object);
+        _orchestrator = new ApplicationOrchestrator(_applicationStore.Object, _codatPlatform.Object, _financingProcessor.Object);
     }
 
     public static IEnumerable<object[]> ValidDataTypesAndAssociatedRequirements()
@@ -34,8 +38,21 @@ public class ApplicationOrchestratorTests
         var codatCompanyId = Guid.NewGuid();
         var applicationId = Guid.NewGuid();
 
-        _codatDataClient.Setup(x => x.CreateCompanyAsync(It.IsAny<string>())).ReturnsAsync(new Company { Id = codatCompanyId }).Verifiable();
+        var statusCode = HttpStatusCode.Created;
+        var companiesClient = new Mock<ICompanies>(MockBehavior.Strict);
+        companiesClient.Setup(x => x.CreateAsync(It.IsAny<CompanyRequestBody?>()))
+            .ReturnsAsync(new CreateCompanyResponse()
+            {
+                RawResponse = new HttpResponseMessage(statusCode),
+                StatusCode = (int)statusCode,
+                Company = new Company() { Id = codatCompanyId.ToString() }
+            })
+            .Verifiable();
 
+        _codatPlatform.SetupGet(x => x.Companies)
+            .Returns(companiesClient.Object)
+            .Verifiable();
+        
         _applicationStore.Setup(x => x.CreateApplication(It.IsAny<Guid>(), It.Is<Guid>(y => y == codatCompanyId)))
             .Returns(
                 new NewApplicationDetails
@@ -50,7 +67,12 @@ public class ApplicationOrchestratorTests
         application.Id.Should().Be(applicationId);
         application.CodatCompanyId.Should().Be(codatCompanyId);
 
-        VerifyCodatClient();
+        companiesClient.Verify();
+        companiesClient.VerifyNoOtherCalls();
+        
+        _codatPlatform.Verify();
+        _codatPlatform.VerifyNoOtherCalls();
+        
         VerifyApplicationStore();
     }
 
@@ -61,14 +83,10 @@ public class ApplicationOrchestratorTests
 
         var alert = CreateDataConnectionStatusAlert(codatCompanyId, "PendingAuth", ExpectedPlatformKey);
 
-        _codatDataClient.Setup(x => x.GetAccountingPlatformsAsync())
-            .ReturnsAsync(
-                new List<Platform>
-                {
-                    new() { Key = ExpectedPlatformKey },
-                    new() { Key = "gbol" }
-                }
-            )
+        var integrationsClient = GetMockedIntegrationsClient();
+
+        _codatPlatform.SetupGet(x => x.Integrations)
+            .Returns(integrationsClient.Object)
             .Verifiable();
 
         _applicationStore.Setup(
@@ -78,9 +96,12 @@ public class ApplicationOrchestratorTests
 
         await _orchestrator.UpdateCodatDataConnectionAsync(alert);
 
-        VerifyCodatClient();
+        integrationsClient.Verify();
+        integrationsClient.VerifyNoOtherCalls();
+        integrationsClient.Verify(x => x.ListAsync(It.IsAny<ListIntegrationsRequest>()), Times.Once);
+        
+        VerifyCodatPlatformClient();
         VerifyApplicationStore();
-        _codatDataClient.Verify(x => x.GetAccountingPlatformsAsync(), Times.Once);
     }
 
     [Fact]
@@ -91,14 +112,10 @@ public class ApplicationOrchestratorTests
 
         var alert = CreateDataConnectionStatusAlert(codatCompanyId, "Linked", ExpectedPlatformKey);
 
-        _codatDataClient.Setup(x => x.GetAccountingPlatformsAsync())
-            .ReturnsAsync(
-                new List<Platform>
-                {
-                    new() { Key = ExpectedPlatformKey },
-                    new() { Key = "gbol" }
-                }
-            )
+        var integrationsClient = GetMockedIntegrationsClient();
+
+        _codatPlatform.SetupGet(x => x.Integrations)
+            .Returns(integrationsClient.Object)
             .Verifiable();
 
         _applicationStore.Setup(
@@ -123,7 +140,11 @@ public class ApplicationOrchestratorTests
 
         await _orchestrator.UpdateCodatDataConnectionAsync(alert);
 
-        VerifyCodatClient();
+        integrationsClient.Verify();
+        integrationsClient.VerifyNoOtherCalls();
+        integrationsClient.Verify(x => x.ListAsync(It.IsAny<ListIntegrationsRequest>()), Times.Once);
+        
+        VerifyCodatPlatformClient();
         VerifyApplicationStore();
     }
 
@@ -166,7 +187,7 @@ public class ApplicationOrchestratorTests
             Times.AtLeastOnce
         );
 
-        VerifyCodatClient();
+        VerifyCodatPlatformClient();
     }
 
     [Fact]
@@ -193,7 +214,7 @@ public class ApplicationOrchestratorTests
             .WithMessage($"Cannot update data type sync status as no accounting data connection exists with id {alert.DataConnectionId}");
 
         VerifyApplicationStore();
-        VerifyCodatClient();
+        VerifyCodatPlatformClient();
     }
 
     [Fact]
@@ -223,7 +244,7 @@ public class ApplicationOrchestratorTests
             Times.Never
         );
 
-        VerifyCodatClient();
+        VerifyCodatPlatformClient();
     }
 
     [Fact]
@@ -258,7 +279,31 @@ public class ApplicationOrchestratorTests
         await _orchestrator.UpdateDataTypeSyncStatusAsync(alert);
 
         VerifyApplicationStore();
-        VerifyCodatClient();
+        VerifyCodatPlatformClient();
+    }
+
+    private Mock<IIntegrations> GetMockedIntegrationsClient()
+    {
+        var statusCode = HttpStatusCode.OK;
+        var integrationsClient = new Mock<IIntegrations>(MockBehavior.Strict);
+        integrationsClient.Setup(x => x.ListAsync(It.IsAny<ListIntegrationsRequest>()))
+            .ReturnsAsync(
+                new ListIntegrationsResponse()
+                {
+                    RawResponse = new HttpResponseMessage(statusCode),
+                    StatusCode = (int) statusCode,
+                    Integrations = new()
+                    {
+                        Results = new List<Integration>()
+                        {
+                            new() { Key = ExpectedPlatformKey },
+                            new() { Key = "gbol" }
+                        }
+                    }
+                }
+            ).Verifiable();
+
+        return integrationsClient;
     }
 
     private static CodatDataConnectionStatusAlert CreateDataConnectionStatusAlert(Guid companyId, string newStatus, string platformKey)
@@ -291,9 +336,9 @@ public class ApplicationOrchestratorTests
         _applicationStore.VerifyNoOtherCalls();
     }
 
-    private void VerifyCodatClient()
+    private void VerifyCodatPlatformClient()
     {
-        _codatDataClient.Verify();
-        _codatDataClient.VerifyNoOtherCalls();
+        _codatPlatform.Verify();
+        _codatPlatform.VerifyNoOtherCalls();
     }
 }
