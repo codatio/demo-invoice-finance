@@ -33,13 +33,13 @@ public class CustomerRiskAssessor : ICustomerRiskAssessor
             return new CustomerRisk
             {
                 CustomerId = customer.Id,
-                Risk = 0m
+                Risk = 0.0
             };
         }
 
         var customerUnpaidInvoices = unpaidInvoicesForCompany.Where(y => y.CustomerRef.Id == customer.Id).ToList();
         var totalAmountDueForCustomer = customerUnpaidInvoices.Sum(y => y.AmountDue);
-        var risk = totalAmountDueForCustomer / totalAmountDueForCompany;
+        var risk = 1.0 - totalAmountDueForCustomer / totalAmountDueForCompany; // High risk == 0, low risk = 1
 
         return new CustomerRisk
         {
