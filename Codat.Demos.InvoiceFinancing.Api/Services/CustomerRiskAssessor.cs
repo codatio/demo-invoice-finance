@@ -33,7 +33,7 @@ public class CustomerRiskAssessor : ICustomerRiskAssessor
             return new CustomerRisk
             {
                 CustomerId = customer.Id,
-                Risk = 1m
+                Risk = 0m
             };
         }
 
